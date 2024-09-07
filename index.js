@@ -1,56 +1,57 @@
-// Load environment variables
-require('dotenv').config();
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const Pino = require('pino');
 
-// Import Baileys library
-const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
-const P = require('pino');
-const qrcode = require('qrcode-terminal');
+const YOUR_PHONE_NUMBER = '2348097842653@s.whatsapp.net'; // Replace with your WhatsApp number
 
-// Function to start the WhatsApp bot
 const startBot = async () => {
-    // Initialize the WhatsApp connection
+    // Authentication
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    
+    // Initialize bot
     const sock = makeWASocket({
-        logger: P({ level: 'silent' }),  // Change to 'debug' for more logs
-        printQRInTerminal: true,         // Print QR code in terminal for scanning
-        browser: ['HelloWorld Bot', 'Chrome', '1.0.0']
+        logger: Pino({ level: 'silent' }),
+        auth: state,
+        printQRInTerminal: true
     });
 
-    // Listen for connection updates
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    // Listen for messages
+    sock.ev.on('messages.upsert', async (messageUpdate) => {
+        const messages = messageUpdate.messages;
+        if (messages.length > 0) {
+            const message = messages[0];
+            const messageText = message.message?.conversation || '';
+            const sender = message.key.remoteJid;
+            const isFromMe = message.key.fromMe;
 
-        if (qr) {
-            // Show QR code in the terminal for authentication
-            qrcode.generate(qr, { small: true });
-        }
+            // Check if the message is from you and starts with '.'
+            if (isFromMe && messageText.startsWith('.')) {
+                // Extract command (everything after '.')
+                const command = messageText.slice(1).trim();
+                
+                // Determine recipient based on the original message
+                const originalRecipient = message.key.remoteJid;
 
-        if (connection === 'open') {
-            console.log('✅ Successfully connected to WhatsApp!');
-        }
-
-        if (connection === 'close') {
-            const reason = new Boom(lastDisconnect.error)?.output.statusCode;
-            if (reason === DisconnectReason.loggedOut) {
-                console.log('❌ Logged out from WhatsApp. Reconnect needed.');
-            } else {
-                console.log('❌ Connection closed. Reconnecting...');
-                startBot();  // Reconnect the bot
+                // Respond with "Hello World" to the original recipient
+                await sock.sendMessage(originalRecipient, { text: 'Hello World' });
+                console.log(`Sent 'Hello World' to ${originalRecipient}`);
             }
         }
     });
 
-    // Listen for incoming messages
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message) return;
+    // Save authentication state
+    sock.ev.on('creds.update', saveCreds);
 
-        const from = msg.key.remoteJid;
-        const messageType = Object.keys(msg.message)[0];
-
-        // Reply with 'Hello World' to any message
-        if (messageType === 'conversation') {
-            await sock.sendMessage(from, { text: 'Hello World' });
-            console.log(`Sent 'Hello World' to ${from}`);
+    // Handle unexpected disconnects
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed due to', lastDisconnect?.error, ', reconnecting...', shouldReconnect);
+            if (shouldReconnect) {
+                setTimeout(startBot, 5000); // Retry after 5 seconds
+            }
+        } else if (connection === 'open') {
+            console.log('Bot connected');
         }
     });
 };
